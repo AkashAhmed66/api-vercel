@@ -81,6 +81,53 @@ const updateLocation = async (req, res) => {
     
     await driver.save();
 
+    // Get socket.io instance from req.app to broadcast location update
+    const io = req.app.io;
+    if (io) {
+      // Find any active rides for this driver
+      const activeRide = await Ride.findOne({
+        driver: driver._id,
+        status: { $in: ['driverAccepted', 'driverArrived', 'inProgress'] }
+      });
+
+      if (activeRide) {
+        // Emit location update to the rider
+        io.to(`user:${activeRide.user.toString()}`).emit('driver_location_update', {
+          rideId: activeRide._id.toString(),
+          driverId: driver._id.toString(),
+          location: {
+            latitude,
+            longitude
+          },
+          lastUpdated: new Date()
+        });
+
+        // Add this location to ride route if ride is in progress
+        if (activeRide.status === 'inProgress') {
+          // Update route array in the ride document
+          await Ride.findByIdAndUpdate(activeRide._id, {
+            $push: {
+              route: {
+                latitude,
+                longitude,
+                timestamp: new Date()
+              }
+            }
+          });
+        }
+      }
+
+      // Also emit to all admins if needed
+      io.to('admin').emit('driver_location_update', {
+        driverId: driver._id.toString(),
+        location: {
+          latitude,
+          longitude
+        },
+        lastUpdated: new Date()
+      });
+    }
+
     res.status(200).json({
       message: 'Location updated successfully',
       location: driver.driverInfo.currentLocation
@@ -267,15 +314,37 @@ const startRide = async (req, res) => {
     ride.status = 'inProgress';
     ride.startTime = new Date();
     
+    // Reset route to track from pickup to dropoff
+    ride.route = [{
+      latitude: driver.driverInfo.currentLocation.latitude, 
+      longitude: driver.driverInfo.currentLocation.longitude,
+      timestamp: new Date()
+    }];
+    
+    // Reset actual distance since we're now starting from pickup
+    ride.actualDistance = 0;
+    
     await ride.save();
 
     res.status(200).json({
       message: 'Ride started successfully',
       ride
     });
-
-    // Note: In a real app, you would trigger a socket event here
-    // to notify the user that their ride has started
+    
+    // Get socket.io instance to notify rider
+    const io = req.app.io;
+    if (io) {
+      // Emit to rider that ride has started
+      io.to(`user:${ride.user.toString()}`).emit('ride_started', {
+        rideId: ride._id.toString(),
+        driverId: driver._id.toString(),
+        message: 'Your ride has started.',
+        startTime: ride.startTime,
+        pickupLocation: ride.pickupLocation,
+        dropoffLocation: ride.dropoffLocation,
+        estimatedPrice: ride.estimatedPrice
+      });
+    }
   } catch (error) {
     console.error('Start ride error:', error);
     res.status(500).json({ 
@@ -329,25 +398,74 @@ const completeRide = async (req, res) => {
     ride.status = 'completed';
     ride.endTime = new Date();
     
-    // Update actual distance and duration if provided
-    if (actualDistance) ride.actualDistance = actualDistance;
-    if (actualDuration) ride.actualDuration = actualDuration;
+    // Calculate ride duration if not provided
+    if (!actualDuration && ride.startTime) {
+      const durationMs = ride.endTime.getTime() - ride.startTime.getTime();
+      ride.actualDuration = Math.round(durationMs / (1000 * 60)); // Convert to minutes
+    } else if (actualDuration) {
+      ride.actualDuration = actualDuration;
+    }
     
-    // Calculate final price
-    ride.finalPrice = ride.calculateFinalPrice();
+    // Use provided distance or what we've been tracking
+    if (actualDistance) {
+      ride.actualDistance = actualDistance;
+    }
     
-    // Update payment status
+    // Always ensure we have an actual distance
+    if (!ride.actualDistance || ride.actualDistance <= 0) {
+      // Fall back to estimated distance if no actual distance recorded
+      ride.actualDistance = ride.estimatedDistance;
+    }
+    
+    // Calculate final price - 20 taka per km
+    const FARE_PER_KM = 20;
+    ride.finalPrice = Math.round(ride.actualDistance * FARE_PER_KM);
+    
+    // Apply minimum fare if needed (e.g. 50 taka)
+    const MIN_FARE = 50;
+    if (ride.finalPrice < MIN_FARE) {
+      ride.finalPrice = MIN_FARE;
+    }
+    
+    // Update payment status (assuming cash payment by default)
     ride.paymentStatus = 'completed';
     
     await ride.save();
 
+    // Prepare response data
+    const rideData = {
+      id: ride._id.toString(),
+      pickupLocation: ride.pickupLocation,
+      dropoffLocation: ride.dropoffLocation,
+      actualDistance: ride.actualDistance,
+      actualDuration: ride.actualDuration,
+      finalPrice: ride.finalPrice,
+      startTime: ride.startTime,
+      endTime: ride.endTime,
+      currency: 'BDT',
+      paymentStatus: ride.paymentStatus
+    };
+
+    // Notify rider via Socket.IO
+    const io = req.app.io;
+    if (io) {
+      io.to(`user:${ride.user.toString()}`).emit('ride_completed', {
+        rideId: ride._id.toString(),
+        driverId: driver._id.toString(),
+        message: 'Your ride has been completed.',
+        endTime: ride.endTime,
+        finalFare: ride.finalPrice,
+        actualDistance: ride.actualDistance,
+        actualDuration: ride.actualDuration,
+        currency: 'BDT',
+        paymentStatus: ride.paymentStatus
+      });
+    }
+
     res.status(200).json({
       message: 'Ride completed successfully',
-      ride
+      ride: rideData
     });
-
-    // Note: In a real app, you would trigger a socket event here
-    // to notify the user that their ride has been completed
   } catch (error) {
     console.error('Complete ride error:', error);
     res.status(500).json({ 

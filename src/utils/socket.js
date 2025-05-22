@@ -1,6 +1,7 @@
 /**
  * Socket.io event handlers for real-time communication
  */
+const Ride = require('../models/ride.model');
 const Notification = require('../models/notification.model');
 
 // Store connected clients
@@ -9,6 +10,42 @@ const connectedClients = new Map();
 const driverLocations = new Map();
 // Store active rides
 const activeRides = new Map();
+// Store driver movement history for ride tracking
+const driverMovementHistory = new Map();
+
+// Constants for fare calculation
+const FARE_PER_KM = 20; // 20 taka per kilometer
+
+/**
+ * Calculate distance between two coordinates in kilometers (using Haversine formula)
+ * @param {Object} coord1 - First coordinate {latitude, longitude}
+ * @param {Object} coord2 - Second coordinate {latitude, longitude}
+ * @returns {number} Distance in kilometers
+ */
+const calculateDistance = (coord1, coord2) => {
+  const R = 6371; // Radius of the earth in km
+  const dLat = deg2rad(coord2.latitude - coord1.latitude);
+  const dLon = deg2rad(coord2.longitude - coord1.longitude); 
+  const a = 
+    Math.sin(dLat/2) * Math.sin(dLat/2) +
+    Math.cos(deg2rad(coord1.latitude)) * Math.cos(deg2rad(coord2.latitude)) * 
+    Math.sin(dLon/2) * Math.sin(dLon/2); 
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)); 
+  return R * c; // Distance in km
+};
+
+const deg2rad = (deg) => {
+  return deg * (Math.PI/180);
+};
+
+/**
+ * Calculate fare based on distance
+ * @param {number} distance - Distance in kilometers
+ * @returns {number} Fare in taka
+ */
+const calculateFare = (distance) => {
+  return Math.round(distance * FARE_PER_KM);
+};
 
 /**
  * Create and send a notification to a user
@@ -51,6 +88,77 @@ const createAndSendNotification = async (io, userId, notificationData) => {
   }
 };
 
+/**
+ * Update driver's movement history and notify rider
+ * @param {Object} io - Socket.IO instance
+ * @param {string} driverId - Driver ID
+ * @param {Object} location - Current location {latitude, longitude}
+ * @param {Object} ride - Current ride object
+ */
+const updateDriverMovement = (io, driverId, location, ride) => {
+  // Get or initialize driver movement history
+  if (!driverMovementHistory.has(driverId)) {
+    driverMovementHistory.set(driverId, []);
+  }
+  
+  const history = driverMovementHistory.get(driverId);
+  const timestamp = new Date();
+  
+  // Add location to history with timestamp
+  history.push({
+    latitude: location.latitude,
+    longitude: location.longitude,
+    timestamp
+  });
+  
+  // Keep only the last 100 positions to manage memory
+  if (history.length > 100) {
+    history.shift();
+  }
+  
+  // Update the history
+  driverMovementHistory.set(driverId, history);
+  
+  // If this driver has an active ride, update the route in the ride
+  if (ride) {
+    // Add this location to the ride's route
+    if (!ride.route) {
+      ride.route = [];
+    }
+    
+    ride.route.push({
+      latitude: location.latitude,
+      longitude: location.longitude,
+      timestamp
+    });
+    
+    activeRides.set(ride.id, ride);
+    
+    // Calculate distance and update estimated fare if needed
+    if (history.length >= 2) {
+      const prevLocation = history[history.length - 2];
+      const currentLocation = history[history.length - 1];
+      
+      const segmentDistance = calculateDistance(
+        prevLocation, 
+        currentLocation
+      );
+      
+      // If we moved a significant distance (more than 10 meters)
+      if (segmentDistance > 0.01) {
+        // Update total distance for the ride
+        ride.actualDistance = (ride.actualDistance || 0) + segmentDistance;
+        
+        // Update fare based on actual distance
+        const updatedFare = calculateFare(ride.actualDistance);
+        ride.updatedFare = updatedFare;
+        
+        activeRides.set(ride.id, ride);
+      }
+    }
+  }
+};
+
 const setupSocketEvents = (io) => {
   io.on('connection', (socket) => {
     console.log('New client connected:', socket.id);
@@ -77,6 +185,54 @@ const setupSocketEvents = (io) => {
         
         // Notify client of successful authentication
         socket.emit('authenticated', { userId, userType });
+        
+        // If this is a driver, check if they have any active rides
+        if (userType === 'driver') {
+          const activeRide = Array.from(activeRides.values())
+            .find(ride => ride.driverId === userId && 
+                  ['driverAccepted', 'driverArrived', 'inProgress'].includes(ride.status));
+          
+          if (activeRide) {
+            // Send the active ride to the driver
+            socket.emit('active_ride_status', activeRide);
+          }
+        }
+        
+        // If this is a user (rider), check if they have any active rides
+        if (userType === 'user') {
+          const activeRide = Array.from(activeRides.values())
+            .find(ride => ride.userId === userId && 
+                  ['searching', 'driverAssigned', 'driverAccepted', 'driverArrived', 'inProgress'].includes(ride.status));
+          
+          if (activeRide) {
+            // Send the active ride to the user
+            socket.emit('active_ride_status', activeRide);
+            
+            // If a driver is assigned, also send the latest driver location
+            if (activeRide.driverId && driverLocations.has(activeRide.driverId)) {
+              const driverLocation = driverLocations.get(activeRide.driverId);
+              
+              socket.emit('driver_location_update', {
+                rideId: activeRide.id,
+                driverId: activeRide.driverId,
+                location: driverLocation.location,
+                lastUpdated: driverLocation.lastUpdated
+              });
+              
+              // Also send driver movement history if available
+              if (driverMovementHistory.has(activeRide.driverId)) {
+                const history = driverMovementHistory.get(activeRide.driverId);
+                if (history.length > 0) {
+                  socket.emit('driver_movement_history', {
+                    rideId: activeRide.id,
+                    driverId: activeRide.driverId,
+                    history
+                  });
+                }
+              }
+            }
+          }
+        }
       }
     });
     
@@ -94,24 +250,220 @@ const setupSocketEvents = (io) => {
           lastUpdated: new Date()
         });
         
-        // Broadcast to any riders assigned to this driver
-        const assignedRides = Array.from(activeRides.values())
-          .filter(ride => ride.driverId === userId);
+        // Find any active ride assigned to this driver
+        const activeRide = Array.from(activeRides.values())
+          .find(ride => ride.driverId === userId && 
+                ['driverAccepted', 'driverArrived', 'inProgress'].includes(ride.status));
         
-        assignedRides.forEach(ride => {
-          io.to(`user:${ride.userId}`).emit('driver_location_update', {
-            rideId: ride.id,
+        // Update driver movement history and notify rider
+        if (activeRide) {
+          updateDriverMovement(io, userId, location, activeRide);
+          
+          // Broadcast to the rider assigned to this driver
+          io.to(`user:${activeRide.userId}`).emit('driver_location_update', {
+            rideId: activeRide.id,
             driverId: userId,
-            location
+            location,
+            lastUpdated: new Date()
           });
-        });
+          
+          // If fare was updated, also send fare update
+          if (activeRide.updatedFare) {
+            io.to(`user:${activeRide.userId}`).emit('fare_update', {
+              rideId: activeRide.id,
+              fare: activeRide.updatedFare,
+              distance: activeRide.actualDistance
+            });
+          }
+        }
         
         // Also broadcast to admin dashboard if needed
         io.to('admin').emit('driver_location_update', {
           driverId: userId,
-          location
+          location,
+          lastUpdated: new Date()
         });
+      } else {
+        // User/rider location updates are only relevant during active rides
+        const activeRide = Array.from(activeRides.values())
+          .find(ride => ride.userId === userId && 
+                ['driverAccepted', 'driverArrived', 'inProgress'].includes(ride.status));
+        
+        if (activeRide && activeRide.driverId) {
+          // Send rider location to the assigned driver
+          io.to(`user:${activeRide.driverId}`).emit('rider_location_update', {
+            rideId: activeRide.id,
+            userId,
+            location,
+            lastUpdated: new Date()
+          });
+        }
       }
+    });
+    
+    // Request driver's movement history
+    socket.on('request_driver_movement', ({ rideId, driverId }) => {
+      if (!rideId || !driverId) return;
+      
+      // Check if this ride exists and belongs to the requesting user
+      const ride = activeRides.get(rideId);
+      if (!ride || ride.userId !== socket.userId) return;
+      
+      // Get driver movement history
+      const history = driverMovementHistory.get(driverId) || [];
+      
+      // Send movement history to rider
+      socket.emit('driver_movement_history', {
+        rideId,
+        driverId,
+        history
+      });
+    });
+    
+    // Handle ride requests
+    socket.on('ride_request', async (rideDetails) => {
+      const { userId, pickupLocation, dropoffLocation, rideType, paymentMethod } = rideDetails;
+      
+      if (!userId || !pickupLocation || !dropoffLocation) {
+        socket.emit('ride_request_error', { 
+          message: 'Missing required ride details' 
+        });
+        return;
+      }
+
+      // Calculate distance between pickup and dropoff for fare estimation
+      const distance = calculateDistance(pickupLocation, dropoffLocation);
+      const estimatedFare = calculateFare(distance);
+      
+      // Create a new ride request with pending status
+      const rideId = `ride_${Date.now()}`;
+      const ride = {
+        id: rideId,
+        userId,
+        pickupLocation,
+        dropoffLocation,
+        rideType,
+        paymentMethod,
+        status: 'searching',
+        requestTime: new Date(),
+        estimatedDistance: distance,
+        estimatedPrice: estimatedFare,
+        currency: 'BDT' // Bangladeshi Taka
+      };
+      
+      activeRides.set(rideId, ride);
+      
+      // Emit to the user that we are searching for drivers
+      socket.emit('ride_request_received', {
+        rideId,
+        status: 'searching',
+        estimatedPrice: estimatedFare,
+        estimatedDistance: distance,
+        currency: 'BDT'
+      });
+      
+      // Create notification for user
+      createAndSendNotification(io, userId, {
+        title: 'Looking for Drivers',
+        body: 'We are looking for drivers in your area.',
+        type: 'ride',
+        relatedId: rideId,
+        data: { 
+          status: 'searching',
+          estimatedPrice: estimatedFare,
+          currency: 'BDT'
+        }
+      });
+      
+      // Find available drivers
+      // This would normally have a smart matching algorithm
+      setTimeout(() => {
+        // Get available drivers (in a real app, we would filter by proximity, ratings, etc.)
+        const availableDrivers = Array.from(connectedClients.entries())
+          .filter(([_, client]) => client.userType === 'driver' && client.connected);
+        
+        if (availableDrivers.length === 0) {
+          // No drivers available
+          socket.emit('ride_request_error', { 
+            rideId,
+            message: 'No drivers available at this time. Please try again.' 
+          });
+          
+          createAndSendNotification(io, userId, {
+            title: 'No Drivers Found',
+            body: 'We couldn\'t find any available drivers. Please try again later.',
+            type: 'ride',
+            relatedId: rideId,
+            data: { status: 'failed' }
+          });
+          
+          activeRides.delete(rideId);
+          return;
+        }
+        
+        // Select a driver (in a real app, this would be based on various factors)
+        const [driverId, driverInfo] = availableDrivers[Math.floor(Math.random() * availableDrivers.length)];
+        
+        // Update ride with driver info
+        ride.driverId = driverId;
+        ride.status = 'driverAssigned';
+        ride.assignedTime = new Date();
+        
+        // Store updated ride
+        activeRides.set(rideId, ride);
+        
+        // Notify the driver about the ride request
+        io.to(`user:${driverId}`).emit('ride_assigned', {
+          rideId,
+          passengerId: userId,
+          pickupLocation,
+          dropoffLocation,
+          estimatedPrice: ride.estimatedPrice,
+          estimatedDistance: ride.estimatedDistance,
+          currency: 'BDT'
+        });
+        
+        // Create notification for driver
+        createAndSendNotification(io, driverId, {
+          title: 'New Ride Request',
+          body: `New ride request from ${pickupLocation.address.substring(0, 20)}...`,
+          type: 'ride',
+          relatedId: rideId,
+          data: { 
+            passengerId: userId,
+            pickupLocation,
+            dropoffLocation,
+            estimatedPrice: ride.estimatedPrice
+          }
+        });
+        
+        // Notify the user that a driver has been assigned
+        io.to(`user:${userId}`).emit('driver_assigned', {
+          rideId,
+          driverId,
+          driverName: 'Driver Name', // In a real app, fetch from database
+          driverRating: 4.8, // In a real app, fetch from database
+          vehicleDetails: {
+            model: 'Toyota Camry',
+            color: 'Black',
+            licensePlate: 'ABC123'
+          },
+          estimatedArrival: '5 minutes'
+        });
+        
+        // Create notification for user
+        createAndSendNotification(io, userId, {
+          title: 'Driver Found',
+          body: 'A driver has been assigned to your ride request.',
+          type: 'ride',
+          relatedId: rideId,
+          data: { 
+            driverId,
+            status: 'driverAssigned',
+            estimatedArrival: '5 minutes'
+          }
+        });
+      }, 5000); // Simulate 5 second search
     });
     
     // Handle sending messages
@@ -303,6 +655,17 @@ const setupSocketEvents = (io) => {
       ride.status = 'driverAccepted';
       activeRides.set(rideId, ride);
       
+      // Initialize driver movement history for this ride if not exists
+      if (!driverMovementHistory.has(driverId)) {
+        driverMovementHistory.set(driverId, []);
+      }
+      
+      // If we have the driver's current location, add it as the first point
+      if (driverLocations.has(driverId)) {
+        const location = driverLocations.get(driverId).location;
+        updateDriverMovement(io, driverId, location, ride);
+      }
+      
       // Send to the user
       io.to(`user:${ride.userId}`).emit('driver_accepted', {
         rideId,
@@ -329,11 +692,24 @@ const setupSocketEvents = (io) => {
       ride.arrivalTime = new Date();
       activeRides.set(rideId, ride);
       
+      // Clear the route history up to this point - we'll start tracking from pickup
+      if (ride.route && ride.route.length > 0) {
+        // Keep the last position as starting point
+        const lastPosition = ride.route[ride.route.length - 1];
+        ride.route = [lastPosition];
+        activeRides.set(rideId, ride);
+      }
+      
+      // Reset the actual distance - only count from pickup to dropoff
+      ride.actualDistance = 0;
+      activeRides.set(rideId, ride);
+      
       // Send to the user
       io.to(`user:${ride.userId}`).emit('driver_arrived', {
         rideId,
         driverId,
-        message: 'Your driver has arrived at the pickup location.'
+        message: 'Your driver has arrived at the pickup location.',
+        arrivalTime: ride.arrivalTime
       });
       
       // Create notification for user
@@ -342,7 +718,7 @@ const setupSocketEvents = (io) => {
         body: 'Your driver has arrived at the pickup location.',
         type: 'ride',
         relatedId: rideId,
-        data: { driverId, status: 'arrived' }
+        data: { driverId, status: 'arrived', arrivalTime: ride.arrivalTime }
       });
     });
     
@@ -353,6 +729,22 @@ const setupSocketEvents = (io) => {
       
       ride.status = 'inProgress';
       ride.startTime = new Date();
+      
+      // Reset actual distance since we're starting from pickup now
+      ride.actualDistance = 0;
+      
+      // Reset the route to track only from the pickup point
+      if (driverLocations.has(driverId)) {
+        const currentLocation = driverLocations.get(driverId).location;
+        ride.route = [{
+          latitude: currentLocation.latitude,
+          longitude: currentLocation.longitude,
+          timestamp: new Date()
+        }];
+      } else {
+        ride.route = [];
+      }
+      
       activeRides.set(rideId, ride);
       
       // Send to the user
@@ -374,13 +766,26 @@ const setupSocketEvents = (io) => {
     });
     
     // Handle ride completed
-    socket.on('ride_completed', ({ driverId, rideId, finalFare }) => {
+    socket.on('ride_completed', ({ driverId, rideId }) => {
       const ride = activeRides.get(rideId);
       if (!ride) return;
       
       ride.status = 'completed';
       ride.endTime = new Date();
-      ride.finalFare = finalFare || ride.estimatedPrice;
+      
+      // Calculate final fare based on actual distance traveled
+      // If no actual distance was recorded (unlikely), use the estimated distance
+      const distance = ride.actualDistance || ride.estimatedDistance;
+      const finalFare = calculateFare(distance);
+      
+      ride.finalFare = finalFare;
+      ride.actualDistance = distance;
+      
+      // Calculate ride duration in minutes
+      if (ride.startTime) {
+        ride.actualDuration = Math.round((ride.endTime.getTime() - ride.startTime.getTime()) / (1000 * 60));
+      }
+      
       activeRides.set(rideId, ride);
       
       // Send to the user
@@ -389,26 +794,47 @@ const setupSocketEvents = (io) => {
         driverId,
         message: 'Your ride has been completed.',
         endTime: ride.endTime,
-        finalFare: ride.finalFare
+        finalFare: ride.finalFare,
+        actualDistance: ride.actualDistance,
+        actualDuration: ride.actualDuration,
+        currency: 'BDT'
       });
       
       // Create notification for user
       createAndSendNotification(io, ride.userId, {
         title: 'Ride Completed',
-        body: `Your ride has been completed. Final fare: $${ride.finalFare.toFixed(2)}`,
+        body: `Your ride has been completed. Final fare: ${ride.finalFare.toFixed(2)} BDT`,
         type: 'ride',
         relatedId: rideId,
         data: { 
           driverId, 
           status: 'completed',
           endTime: ride.endTime,
-          finalFare: ride.finalFare
+          finalFare: ride.finalFare,
+          actualDistance: ride.actualDistance,
+          currency: 'BDT'
         }
       });
       
+      // Send receipt to driver too
+      io.to(`user:${driverId}`).emit('ride_completed_driver', {
+        rideId,
+        userId: ride.userId,
+        finalFare: ride.finalFare,
+        actualDistance: ride.actualDistance,
+        actualDuration: ride.actualDuration,
+        currency: 'BDT'
+      });
+      
       // After completion, move the ride from active to history
-      // This would be handled by the database in a real app
-      activeRides.delete(rideId);
+      setTimeout(() => {
+        // In a production app, this would be persisted to a database
+        activeRides.delete(rideId);
+        // Also clean up the driver movement history
+        if (driverMovementHistory.has(driverId)) {
+          driverMovementHistory.delete(driverId);
+        }
+      }, 1000 * 60 * 10); // Keep in memory for 10 minutes before removing
     });
     
     // Handle ride cancellation
@@ -465,6 +891,10 @@ const setupSocketEvents = (io) => {
       // Remove from active rides
       setTimeout(() => {
         activeRides.delete(rideId);
+        // Also clean up any driver movement history
+        if (ride.driverId && driverMovementHistory.has(ride.driverId)) {
+          driverMovementHistory.delete(ride.driverId);
+        }
       }, 1000 * 60 * 5); // Keep in memory for 5 minutes before removing
     });
     

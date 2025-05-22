@@ -54,27 +54,38 @@ const estimateRide = async (req, res) => {
       });
     }
 
-    // Get ride option
+    // Calculate price based on fixed rate (20 taka per km)
+    const FARE_PER_KM = 20;
+    let estimatedPrice = Math.round(distance * FARE_PER_KM);
+    
+    // Get ride option for potential modifiers
     const rideOption = await RideOption.findOne({ 
       name: rideType.toLowerCase(),
       isActive: true
     });
 
-    if (!rideOption) {
-      return res.status(404).json({ 
-        message: 'Ride option not found' 
-      });
+    if (rideOption) {
+      // Apply any multipliers from the ride option
+      if (rideOption.priceMultiplier && rideOption.priceMultiplier > 1) {
+        estimatedPrice = Math.round(estimatedPrice * rideOption.priceMultiplier);
+      }
+      
+      // Apply minimum fare if needed
+      if (rideOption.minimumFare && estimatedPrice < rideOption.minimumFare) {
+        estimatedPrice = rideOption.minimumFare;
+      }
     }
-
-    // Calculate estimated price
-    const estimatedPrice = rideOption.calculateEstimatedPrice(distance, duration);
 
     res.status(200).json({
       estimatedPrice,
       distance,
       duration,
-      currency: 'USD',
-      rideOption
+      currency: 'BDT', // Bangladeshi Taka
+      farePerKm: FARE_PER_KM,
+      rideDetails: {
+        type: rideType,
+        ...(rideOption ? { options: rideOption } : {})
+      }
     });
   } catch (error) {
     console.error('Estimate ride error:', error);
@@ -115,11 +126,33 @@ const requestRide = async (req, res) => {
       promoCode
     } = req.body;
 
-    if (!pickupLocation || !dropoffLocation || !estimatedPrice) {
+    if (!pickupLocation || !dropoffLocation) {
       return res.status(400).json({ 
         message: 'Missing required parameters' 
       });
     }
+    
+    // Calculate distance if not provided
+    let distance = estimatedDistance;
+    if (!distance) {
+      // Calculate distance between pickup and dropoff using the Haversine formula
+      const R = 6371; // Radius of the Earth in km
+      const dLat = deg2rad(dropoffLocation.latitude - pickupLocation.latitude);
+      const dLon = deg2rad(dropoffLocation.longitude - pickupLocation.longitude);
+      const a = 
+        Math.sin(dLat/2) * Math.sin(dLat/2) +
+        Math.cos(deg2rad(pickupLocation.latitude)) * Math.cos(deg2rad(dropoffLocation.latitude)) * 
+        Math.sin(dLon/2) * Math.sin(dLon/2);
+      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+      distance = R * c; // Distance in km
+    }
+    
+    // Calculate fare based on 20 taka per km
+    const FARE_PER_KM = 20;
+    const calculatedFare = Math.round(distance * FARE_PER_KM);
+    
+    // Use the provided estimated price or our calculation
+    const finalEstimatedPrice = estimatedPrice || calculatedFare;
 
     // Create new ride request
     const ride = new Ride({
@@ -127,17 +160,19 @@ const requestRide = async (req, res) => {
       pickupLocation,
       dropoffLocation,
       rideType,
-      estimatedDistance,
-      estimatedDuration,
-      estimatedPrice,
-      paymentMethod: paymentMethod || 'credit_card',
+      estimatedDistance: distance,
+      estimatedDuration: estimatedDuration || Math.round(distance * 2), // Rough estimate: 30 km/h = 2 min/km
+      estimatedPrice: finalEstimatedPrice,
+      farePerKm: FARE_PER_KM,
+      paymentMethod: paymentMethod || 'cash',
       scheduledTime: scheduledTime ? new Date(scheduledTime) : null,
       isScheduled: !!isScheduled,
       isRecurring: !!isRecurring,
       recurringDays: recurringDays || [],
       promoCode,
       status: isScheduled ? 'scheduled' : 'searching',
-      requestTime: new Date()
+      requestTime: new Date(),
+      currency: 'BDT' // Bangladesh Taka
     });
 
     // Save ride to database
@@ -151,15 +186,43 @@ const requestRide = async (req, res) => {
       });
     }
 
-    // In a real app, we would now start searching for drivers
-    // For demonstration, we'll just return the ride request
+    // Get socket.io instance from req.app
+    const io = req.app.io;
+    
+    if (io) {
+      // Emit ride request event to find drivers
+      const rideData = {
+        id: ride._id.toString(),
+        userId: req.user._id.toString(),
+        pickupLocation,
+        dropoffLocation,
+        rideType,
+        estimatedPrice: finalEstimatedPrice,
+        estimatedDistance: distance,
+        paymentMethod: ride.paymentMethod,
+        user: {
+          name: req.user.name,
+          phone: req.user.phone
+        }
+      };
+      
+      // This emits to all connected drivers
+      io.to('drivers').emit('new_ride_request', rideData);
+      
+      // Also emit to specific user as confirmation
+      io.to(`user:${req.user._id}`).emit('ride_request_received', {
+        rideId: ride._id.toString(),
+        status: 'searching',
+        estimatedPrice: finalEstimatedPrice,
+        estimatedDistance: distance,
+        currency: 'BDT'
+      });
+    }
+
     res.status(201).json({
       message: 'Ride requested successfully',
       ride
     });
-
-    // Note: In a real app, you would trigger a socket event here
-    // to notify drivers about the new ride request
   } catch (error) {
     console.error('Request ride error:', error);
     res.status(500).json({ 
@@ -167,6 +230,11 @@ const requestRide = async (req, res) => {
       error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
+};
+
+// Helper function for distance calculation
+const deg2rad = (deg) => {
+  return deg * (Math.PI/180);
 };
 
 /**
