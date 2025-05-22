@@ -32,9 +32,10 @@ const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
     origin: process.env.SOCKET_CORS_ORIGIN || '*',
-    methods: ['GET', 'POST', 'PUT', 'DELETE'],
+    methods: ['GET', 'POST'],
     credentials: true
-  }
+  },
+  transports: ['websocket', 'polling']
 });
 
 // Make io available to our routes
@@ -44,7 +45,7 @@ app.io = io;
 app.use(helmet());
 app.use(cors());
 app.use(express.json());
-app.use(express.urlencoded({ extended: false }));
+app.use(express.urlencoded({ extended: true }));
 app.use(morgan('dev'));
 
 // Define routes
@@ -71,10 +72,10 @@ app.use((req, res) => {
 
 // Handle errors
 app.use((err, req, res, next) => {
-  console.error(err.stack);
-  res.status(err.statusCode || 500).json({
-    message: err.message || 'Internal Server Error',
-    error: process.env.NODE_ENV === 'development' ? err : {}
+  console.error('Server error:', err);
+  res.status(500).json({
+    message: 'Internal server error',
+    error: process.env.NODE_ENV === 'development' ? err.message : undefined
   });
 });
 
@@ -83,32 +84,25 @@ setupSocketEvents(io);
 
 // Connect to MongoDB and start server
 const PORT = process.env.PORT || 5000;
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/ishare';
 
-// On Vercel, we don't need to explicitly listen for the server
-// Vercel will handle that for us
-if (process.env.NODE_ENV !== 'production') {
-  connectDB()
-    .then(() => {
-      server.listen(PORT, '0.0.0.0', () => {
-        console.log(`Server running on port ${PORT}`);
-      });
-    })
-    .catch((err) => {
-      console.error('Failed to connect to MongoDB', err);
-      process.exit(1);
+mongoose.connect(MONGODB_URI)
+  .then(() => {
+    console.log('Connected to MongoDB');
+    // Start server
+    server.listen(PORT, () => {
+      console.log(`Server running on port ${PORT}`);
+      console.log(`WebSocket server running at ws://localhost:${PORT}`);
     });
-} else {
-  // For Vercel, just connect to MongoDB
-  connectDB()
-    .catch((err) => {
-      console.error('Failed to connect to MongoDB', err);
-    });
-}
+  })
+  .catch(err => {
+    console.error('MongoDB connection error:', err);
+    process.exit(1);
+  });
 
 // Handle unhandled promise rejections
-process.on('unhandledRejection', (err) => {
-  console.error('Unhandled Promise Rejection:', err);
-  // Don't crash the server, but log the error
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
 });
 
 module.exports = { app, server, io }; 

@@ -1,6 +1,6 @@
-// This file serves as the entry point for Vercel
-// It imports the Express app from server.js
+/**
+ * Entry point for IShare Ride-Sharing App API
+ * This file loads and starts the server
+ */
 
-const { app } = require('./src/server');
-
-module.exports = app; 
+require('./src/server'); 
