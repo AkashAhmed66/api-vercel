@@ -1,6 +1,7 @@
 /**
  * Socket.io event handlers for real-time communication
  */
+const Notification = require('../models/notification.model');
 
 // Store connected clients
 const connectedClients = new Map();
@@ -8,6 +9,47 @@ const connectedClients = new Map();
 const driverLocations = new Map();
 // Store active rides
 const activeRides = new Map();
+
+/**
+ * Create and send a notification to a user
+ * @param {Object} io - Socket.IO instance
+ * @param {string} userId - User ID to send notification to
+ * @param {Object} notificationData - Notification data
+ */
+const createAndSendNotification = async (io, userId, notificationData) => {
+  try {
+    if (!userId || !notificationData.title || !notificationData.body) {
+      console.error('Invalid notification data:', { userId, ...notificationData });
+      return;
+    }
+    
+    // Create notification in database
+    const notification = await Notification.createNotification({
+      user: userId,
+      title: notificationData.title,
+      body: notificationData.body,
+      type: notificationData.type || 'system',
+      relatedId: notificationData.relatedId || null,
+      data: notificationData.data || {}
+    });
+    
+    // Emit to the specific user
+    io.to(`user:${userId}`).emit('notification', {
+      id: notification._id,
+      title: notification.title,
+      body: notification.body,
+      time: notification.createdAt,
+      read: notification.read,
+      type: notification.type,
+      relatedId: notification.relatedId,
+      data: notification.data
+    });
+    
+    console.log(`Notification sent to user ${userId}: ${notification.title}`);
+  } catch (error) {
+    console.error('Error creating and sending notification:', error);
+  }
+};
 
 const setupSocketEvents = (io) => {
   io.on('connection', (socket) => {
@@ -76,7 +118,7 @@ const setupSocketEvents = (io) => {
     socket.on('send_message', async (messageData) => {
       const { senderId, receiverId, rideId, content, attachments } = messageData;
       
-      if (!senderId || !receiverId || !rideId || !content) {
+      if (!senderId || !receiverId || !content) {
         socket.emit('message_error', {
           message: 'Missing required message data'
         });
@@ -84,9 +126,6 @@ const setupSocketEvents = (io) => {
       }
       
       // In a real implementation, we would save this message to the database
-      // Through the API endpoint and then emit the event
-      // For now, we'll just emit the event for the chat feature to work
-      
       const newMessage = {
         _id: `msg_${Date.now()}`,
         sender: senderId,
@@ -103,6 +142,15 @@ const setupSocketEvents = (io) => {
       
       // Also send back to the sender for confirmation
       socket.emit('message_sent', newMessage);
+      
+      // Create notification for the recipient
+      createAndSendNotification(io, receiverId, {
+        title: 'New Message',
+        body: content.length > 50 ? content.substring(0, 47) + '...' : content,
+        type: 'system',
+        relatedId: rideId,
+        data: { senderId, messageId: newMessage._id }
+      });
     });
     
     // Handle read receipts
@@ -151,6 +199,15 @@ const setupSocketEvents = (io) => {
         status: 'searching'
       });
       
+      // Create notification for user
+      createAndSendNotification(io, userId, {
+        title: 'Looking for Drivers',
+        body: 'We are looking for drivers in your area.',
+        type: 'ride',
+        relatedId: rideId,
+        data: { status: 'searching' }
+      });
+      
       // Simulate finding a driver (in a real app, this would use a matching algorithm)
       setTimeout(() => {
         // Get available drivers (in a real app, we would filter by proximity, ratings, etc.)
@@ -163,6 +220,15 @@ const setupSocketEvents = (io) => {
             rideId,
             message: 'No drivers available at this time. Please try again.' 
           });
+          
+          createAndSendNotification(io, userId, {
+            title: 'No Drivers Found',
+            body: 'We couldn\'t find any available drivers. Please try again later.',
+            type: 'ride',
+            relatedId: rideId,
+            data: { status: 'failed' }
+          });
+          
           activeRides.delete(rideId);
           return;
         }
@@ -187,6 +253,19 @@ const setupSocketEvents = (io) => {
           estimatedPrice: ride.estimatedPrice
         });
         
+        // Create notification for driver
+        createAndSendNotification(io, driverId, {
+          title: 'New Ride Request',
+          body: `New ride request from ${pickupLocation.address.substring(0, 20)}...`,
+          type: 'ride',
+          relatedId: rideId,
+          data: { 
+            passengerId: userId,
+            pickupLocation,
+            dropoffLocation
+          }
+        });
+        
         // Notify the user that a driver has been assigned
         io.to(`user:${userId}`).emit('driver_assigned', {
           rideId,
@@ -200,6 +279,19 @@ const setupSocketEvents = (io) => {
           },
           estimatedArrival: '5 minutes'
         });
+        
+        // Create notification for user
+        createAndSendNotification(io, userId, {
+          title: 'Driver Found',
+          body: 'A driver has been assigned to your ride request.',
+          type: 'ride',
+          relatedId: rideId,
+          data: { 
+            driverId,
+            status: 'driverAssigned',
+            estimatedArrival: '5 minutes'
+          }
+        });
       }, 5000); // Simulate 5 second search
     });
     
@@ -211,10 +303,20 @@ const setupSocketEvents = (io) => {
       ride.status = 'driverAccepted';
       activeRides.set(rideId, ride);
       
+      // Send to the user
       io.to(`user:${ride.userId}`).emit('driver_accepted', {
         rideId,
         driverId,
         message: 'Driver has accepted your ride request.'
+      });
+      
+      // Create notification for user
+      createAndSendNotification(io, ride.userId, {
+        title: 'Ride Accepted',
+        body: 'A driver has accepted your ride request and is on their way.',
+        type: 'ride',
+        relatedId: rideId,
+        data: { driverId, status: 'accepted' }
       });
     });
     
@@ -227,10 +329,20 @@ const setupSocketEvents = (io) => {
       ride.arrivalTime = new Date();
       activeRides.set(rideId, ride);
       
+      // Send to the user
       io.to(`user:${ride.userId}`).emit('driver_arrived', {
         rideId,
         driverId,
         message: 'Your driver has arrived at the pickup location.'
+      });
+      
+      // Create notification for user
+      createAndSendNotification(io, ride.userId, {
+        title: 'Driver Arrived',
+        body: 'Your driver has arrived at the pickup location.',
+        type: 'ride',
+        relatedId: rideId,
+        data: { driverId, status: 'arrived' }
       });
     });
     
@@ -243,36 +355,60 @@ const setupSocketEvents = (io) => {
       ride.startTime = new Date();
       activeRides.set(rideId, ride);
       
+      // Send to the user
       io.to(`user:${ride.userId}`).emit('ride_started', {
         rideId,
         driverId,
         message: 'Your ride has started.',
         startTime: ride.startTime
       });
+      
+      // Create notification for user
+      createAndSendNotification(io, ride.userId, {
+        title: 'Ride Started',
+        body: 'Your ride has started. Enjoy your journey!',
+        type: 'ride',
+        relatedId: rideId,
+        data: { driverId, status: 'started', startTime: ride.startTime }
+      });
     });
     
     // Handle ride completed
-    socket.on('ride_completed', ({ driverId, rideId }) => {
+    socket.on('ride_completed', ({ driverId, rideId, finalFare }) => {
       const ride = activeRides.get(rideId);
       if (!ride) return;
       
       ride.status = 'completed';
       ride.endTime = new Date();
+      ride.finalFare = finalFare || ride.estimatedPrice;
       activeRides.set(rideId, ride);
       
+      // Send to the user
       io.to(`user:${ride.userId}`).emit('ride_completed', {
         rideId,
         driverId,
         message: 'Your ride has been completed.',
         endTime: ride.endTime,
-        fare: ride.estimatedPrice // In a real app, calculate the actual fare
+        finalFare: ride.finalFare
       });
       
-      // In a real app, we would store this ride in the database
-      // and eventually remove it from the active rides map
-      setTimeout(() => {
-        activeRides.delete(rideId);
-      }, 1000 * 60 * 60); // Remove after an hour
+      // Create notification for user
+      createAndSendNotification(io, ride.userId, {
+        title: 'Ride Completed',
+        body: `Your ride has been completed. Final fare: $${ride.finalFare.toFixed(2)}`,
+        type: 'ride',
+        relatedId: rideId,
+        data: { 
+          driverId, 
+          status: 'completed',
+          endTime: ride.endTime,
+          finalFare: ride.finalFare
+        }
+      });
+      
+      // After completion, move the ride from active to history
+      // This would be handled by the database in a real app
+      activeRides.delete(rideId);
     });
     
     // Handle ride cancellation
@@ -280,55 +416,134 @@ const setupSocketEvents = (io) => {
       const ride = activeRides.get(rideId);
       if (!ride) return;
       
+      // Only allow cancellation by the rider or the assigned driver
+      if (ride.userId !== userId && ride.driverId !== userId) {
+        socket.emit('ride_error', {
+          rideId,
+          message: 'You are not authorized to cancel this ride'
+        });
+        return;
+      }
+      
+      const cancelledByRider = ride.userId === userId;
+      const notifyUserId = cancelledByRider ? ride.driverId : ride.userId;
+      
+      // Update ride status
       ride.status = 'cancelled';
       ride.cancelTime = new Date();
-      ride.cancelledBy = userId === ride.userId ? 'user' : 'driver';
+      ride.cancelledBy = userId;
       activeRides.set(rideId, ride);
       
-      // Notify the user
-      io.to(`user:${ride.userId}`).emit('ride_cancelled', {
-        rideId,
-        message: 'Your ride has been cancelled.',
-        cancelledBy: ride.cancelledBy
-      });
-      
-      // Notify the driver if assigned
-      if (ride.driverId) {
-        io.to(`user:${ride.driverId}`).emit('ride_cancelled', {
+      // Notify the other party about cancellation
+      if (notifyUserId) {
+        io.to(`user:${notifyUserId}`).emit('ride_cancelled', {
           rideId,
-          message: 'Ride has been cancelled.',
-          cancelledBy: ride.cancelledBy
+          cancelledBy: cancelledByRider ? 'rider' : 'driver',
+          message: `Ride was cancelled by ${cancelledByRider ? 'rider' : 'driver'}`
+        });
+        
+        // Create notification for the other party
+        createAndSendNotification(io, notifyUserId, {
+          title: 'Ride Cancelled',
+          body: `Your ride has been cancelled by the ${cancelledByRider ? 'rider' : 'driver'}.`,
+          type: 'ride',
+          relatedId: rideId,
+          data: { 
+            cancelledBy: cancelledByRider ? 'rider' : 'driver',
+            cancelTime: ride.cancelTime
+          }
         });
       }
       
-      // In a real app, we would store this cancelled ride in the database
-      // and eventually remove it from the active rides map
+      // Confirm cancellation to the party who initiated it
+      socket.emit('ride_cancelled_confirmation', {
+        rideId,
+        status: 'cancelled',
+        message: 'Ride has been cancelled successfully'
+      });
+      
+      // Remove from active rides
       setTimeout(() => {
         activeRides.delete(rideId);
-      }, 1000 * 60 * 10); // Remove after 10 minutes
+      }, 1000 * 60 * 5); // Keep in memory for 5 minutes before removing
     });
     
-    // Handle rating submission
-    socket.on('submit_rating', ({ rideId, ratedUserId, raterUserId, score, comment, categories }) => {
-      console.log(`Rating submitted for ride ${rideId}: ${raterUserId} rated ${ratedUserId} with ${score} stars`);
-      
-      // In a real app, we would save this to the database using the API
-      // Then emit confirmation events to both users
-      
-      // Notify the rated user
-      io.to(`user:${ratedUserId}`).emit('rating_received', {
-        rideId,
-        ratedBy: raterUserId,
-        score,
-        comment: comment || ''
+    // Handle payment processed event
+    socket.on('payment_processed', ({ userId, paymentId, amount, method }) => {
+      // Send the payment_processed event
+      io.to(`user:${userId}`).emit('payment_processed', {
+        paymentId,
+        amount,
+        method,
+        timestamp: new Date()
       });
       
-      // Confirm to the rater
-      socket.emit('rating_confirmed', {
-        rideId,
-        rated: ratedUserId,
-        score
+      // Create notification for user
+      createAndSendNotification(io, userId, {
+        title: 'Payment Processed',
+        body: `Your payment of $${amount.toFixed(2)} has been processed successfully.`,
+        type: 'payment',
+        relatedId: paymentId,
+        data: { amount, method, timestamp: new Date() }
       });
+    });
+    
+    // Handle promotion notifications
+    socket.on('send_promo_notification', ({ userIds, promoCode, description, expiryDate }) => {
+      if (!userIds || !Array.isArray(userIds) || userIds.length === 0) {
+        console.error('No users specified for promo notification');
+        return;
+      }
+      
+      // For each user in the list, send a notification
+      userIds.forEach(userId => {
+        // Send the promotion event
+        io.to(`user:${userId}`).emit('promo_notification', {
+          promoCode,
+          description,
+          expiryDate
+        });
+        
+        // Create notification for user
+        createAndSendNotification(io, userId, {
+          title: 'New Promotion Available',
+          body: `${description} Use code: ${promoCode}. Expires: ${expiryDate}`,
+          type: 'promo',
+          data: { promoCode, description, expiryDate }
+        });
+      });
+    });
+    
+    // Handle system notifications to all users or specific users
+    socket.on('send_system_notification', ({ userIds, title, body, data }) => {
+      if (!title || !body) {
+        console.error('Invalid system notification data');
+        return;
+      }
+      
+      // If userIds is provided, send to those specific users
+      if (userIds && Array.isArray(userIds) && userIds.length > 0) {
+        userIds.forEach(userId => {
+          createAndSendNotification(io, userId, {
+            title,
+            body,
+            type: 'system',
+            data
+          });
+        });
+      } 
+      // Otherwise broadcast to all connected users
+      else {
+        // We don't want to create a notification for every user in the system,
+        // so we'll just emit the event to all connected clients
+        io.emit('system_notification', {
+          title,
+          body,
+          time: new Date(),
+          type: 'system',
+          data
+        });
+      }
     });
     
     // Handle disconnection
@@ -337,33 +552,17 @@ const setupSocketEvents = (io) => {
       
       if (socket.userId) {
         const client = connectedClients.get(socket.userId);
+        
         if (client) {
           client.connected = false;
           client.lastActive = new Date();
           connectedClients.set(socket.userId, client);
           
-          // If this is a driver, handle any active rides
-          if (socket.userType === 'driver') {
-            // Get any rides assigned to this driver
-            const driverRides = Array.from(activeRides.values())
-              .filter(ride => ride.driverId === socket.userId && ['driverAssigned', 'driverAccepted', 'driverArrived', 'inProgress'].includes(ride.status));
-            
-            // Notify users of driver disconnection
-            driverRides.forEach(ride => {
-              io.to(`user:${ride.userId}`).emit('driver_disconnected', {
-                rideId: ride.id,
-                driverId: socket.userId,
-                message: 'Your driver has disconnected. We are monitoring the situation.'
-              });
-            });
-            
-            // Remove driver from available locations
-            driverLocations.delete(socket.userId);
-          }
+          console.log(`User ${socket.userId} disconnected`);
         }
       }
     });
   });
 };
 
-module.exports = setupSocketEvents; 
+module.exports = { setupSocketEvents, createAndSendNotification }; 

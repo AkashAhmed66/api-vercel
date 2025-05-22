@@ -21,9 +21,10 @@ const rideRoutes = require('./routes/ride.routes');
 const driverRoutes = require('./routes/driver.routes');
 const paymentRoutes = require('./routes/payment.routes');
 const messageRoutes = require('./routes/message.routes');
+const notificationRoutes = require('./routes/notification.routes');
 
 // Import socket handler
-const setupSocketEvents = require('./utils/socket');
+const { setupSocketEvents } = require('./utils/socket');
 
 // Initialize Express app
 const app = express();
@@ -35,6 +36,9 @@ const io = new Server(server, {
     credentials: true
   }
 });
+
+// Make io available to our routes
+app.io = io;
 
 // Set up middleware
 app.use(helmet());
@@ -50,6 +54,7 @@ app.use('/api/rides', rideRoutes);
 app.use('/api/drivers', driverRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/messages', messageRoutes);
+app.use('/api/notifications', notificationRoutes);
 
 // Root route
 app.get('/', (req, res) => {

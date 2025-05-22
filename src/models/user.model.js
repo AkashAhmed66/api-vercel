@@ -179,6 +179,10 @@ const userSchema = new mongoose.Schema({
     platform: {
       type: String,
       enum: ['ios', 'android', 'web']
+    },
+    lastUsed: {
+      type: Date,
+      default: Date.now
     }
   }],
   accountStatus: {
