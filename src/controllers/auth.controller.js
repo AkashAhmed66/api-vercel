@@ -39,14 +39,16 @@ const register = async (req, res) => {
     // Save user to database
     await user.save();
 
-    // Generate JWT token
+    // Generate JWT token and refresh token
     const token = generateToken(user);
+    const refreshToken = generateToken(user, '30d'); // Longer expiry for refresh token
 
     // Return user data (excluding password) and token
     res.status(201).json({
       message: 'User registered successfully',
       user: user.getPublicProfile(),
-      token
+      token,
+      refreshToken
     });
   } catch (error) {
     console.error('Registration error:', error);
@@ -91,14 +93,16 @@ const login = async (req, res) => {
     user.lastLoginDate = new Date();
     await user.save();
 
-    // Generate JWT token
+    // Generate JWT token and refresh token
     const token = generateToken(user);
+    const refreshToken = generateToken(user, '30d'); // Longer expiry for refresh token
 
     // Return user data (excluding password) and token
     res.status(200).json({
       message: 'Login successful',
       user: user.getPublicProfile(),
-      token
+      token,
+      refreshToken
     });
   } catch (error) {
     console.error('Login error:', error);
