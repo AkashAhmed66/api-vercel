@@ -1,4 +1,6 @@
 // This file serves as the entry point for Vercel
-// It simply imports and re-exports the server.js file
+// It imports the Express app from server.js
 
-module.exports = require('./src/server'); 
+const { app } = require('./src/server');
+
+module.exports = app; 
