@@ -18,22 +18,23 @@ const register = async (req, res) => {
       });
     }
 
-    const { name, email, password, phone } = req.body;
+    const { name, email, password, phone, role = 'user' } = req.body;
 
     // Check if user already exists
     const userExists = await User.findOne({ email });
     if (userExists) {
       return res.status(400).json({ 
-        message: 'User already exists' 
+        message: 'An account with this email already exists' 
       });
     }
 
     // Create new user
     const user = new User({
-      name,
-      email,
+      name: name.trim(),
+      email: email.toLowerCase().trim(),
       password,
-      phone
+      phone: phone.trim(),
+      role
     });
 
     // Save user to database
@@ -233,11 +234,48 @@ const resetPassword = async (req, res) => {
   }
 };
 
+/**
+ * Verify email with token
+ * @route POST /api/auth/verify-email
+ * @access Public
+ */
+const verifyEmail = async (req, res) => {
+  try {
+    // Check for validation errors
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ 
+        message: 'Validation errors', 
+        errors: errors.array() 
+      });
+    }
+
+    const { token } = req.body;
+
+    // In a real implementation, you would:
+    // 1. Verify the email verification token
+    // 2. Check if it's expired
+    // 3. Update the user's isVerified status
+    // 4. Remove the verification token
+    
+    // For demonstration purposes, accept any token:
+    res.status(200).json({ 
+      message: 'Email verified successfully' 
+    });
+  } catch (error) {
+    console.error('Email verification error:', error);
+    res.status(500).json({ 
+      message: 'Failed to verify email' 
+    });
+  }
+};
+
 module.exports = {
   register,
   login,
   getCurrentUser,
   logout,
   forgotPassword,
-  resetPassword
+  resetPassword,
+  verifyEmail
 }; 

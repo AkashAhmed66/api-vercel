@@ -3,6 +3,104 @@ const Ride = require('../models/ride.model');
 const { validationResult } = require('express-validator');
 
 /**
+ * Register as a driver
+ * @route POST /api/drivers/register
+ * @access Private (User)
+ */
+const registerDriver = async (req, res) => {
+  try {
+    // Check for validation errors
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ 
+        message: 'Validation errors', 
+        errors: errors.array() 
+      });
+    }
+
+    const user = req.user;
+    const {
+      licenseNumber,
+      licenseExpiryDate,
+      vehicleDetails: {
+        type: vehicleType,
+        make,
+        model,
+        year,
+        color,
+        licensePlate
+      },
+      documents,
+      bankingInfo
+    } = req.body;
+
+    // Check if user is already a driver
+    if (user.role === 'driver') {
+      return res.status(400).json({ 
+        message: 'User is already registered as a driver' 
+      });
+    }
+
+    // Additional validation
+    const licenseExpiry = new Date(licenseExpiryDate);
+    const today = new Date();
+    
+    if (licenseExpiry <= today) {
+      return res.status(400).json({
+        message: 'Driver license has expired or expires today. Please provide a valid license.'
+      });
+    }
+
+    const currentYear = new Date().getFullYear();
+    const vehicleYear = parseInt(year);
+    
+    if (vehicleYear < 2010 || vehicleYear > currentYear) {
+      return res.status(400).json({
+        message: 'Vehicle must be from 2010 or newer.'
+      });
+    }
+
+    // Update user with driver information
+    user.role = 'driver';
+    user.driverInfo = {
+      licenseNumber: licenseNumber.trim(),
+      licenseExpiryDate: licenseExpiry,
+      vehicleDetails: {
+        type: vehicleType,
+        make: make.trim(),
+        model: model.trim(),
+        year: vehicleYear,
+        color: color.trim(),
+        licensePlate: licensePlate.toUpperCase().trim()
+      },
+      documents: documents || {},
+      bankingInfo: bankingInfo || {},
+      applicationStatus: 'pending',
+      isActive: false, // Driver needs to manually activate
+      isVerified: false, // Admin needs to verify
+      registrationDate: new Date(),
+      currentLocation: {
+        latitude: null,
+        longitude: null,
+        lastUpdated: null
+      }
+    };
+
+    await user.save();
+
+    res.status(200).json({
+      message: 'Driver registration successful! Your application is under review.',
+      user: user.getPublicProfile()
+    });
+  } catch (error) {
+    console.error('Driver registration error:', error);
+    res.status(500).json({ 
+      message: 'Failed to register as driver' 
+    });
+  }
+};
+
+/**
  * Update driver availability
  * @route PUT /api/drivers/availability
  * @access Private (Driver)
@@ -665,6 +763,7 @@ const getDriverStats = async (req, res) => {
 };
 
 module.exports = {
+  registerDriver,
   updateAvailability,
   updateLocation,
   acceptRide,

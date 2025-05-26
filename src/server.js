@@ -22,6 +22,8 @@ const driverRoutes = require('./routes/driver.routes');
 const paymentRoutes = require('./routes/payment.routes');
 const messageRoutes = require('./routes/message.routes');
 const notificationRoutes = require('./routes/notification.routes');
+const uploadRoutes = require('./routes/upload.routes');
+const adminRoutes = require('./routes/admin.routes');
 
 // Import socket handler
 const { setupSocketEvents } = require('./utils/socket');
@@ -48,6 +50,9 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(morgan('dev'));
 
+// Serve uploaded files statically
+app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
+
 // Define routes
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
@@ -56,6 +61,8 @@ app.use('/api/drivers', driverRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/messages', messageRoutes);
 app.use('/api/notifications', notificationRoutes);
+app.use('/api/upload', uploadRoutes);
+app.use('/api/admin', adminRoutes);
 
 // Root route
 app.get('/', (req, res) => {

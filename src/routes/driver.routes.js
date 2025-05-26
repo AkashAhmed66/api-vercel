@@ -5,10 +5,34 @@ const { authenticate, authorize } = require('../middleware/auth.middleware');
 
 const router = express.Router();
 
-// All routes require authentication
+// Driver registration route (only requires authentication, not driver role)
+router.post(
+  '/register',
+  authenticate,
+  [
+    body('licenseNumber').trim().not().isEmpty().withMessage('License number is required'),
+    body('licenseExpiryDate').isISO8601().withMessage('Valid license expiry date is required'),
+    body('vehicleDetails.type').optional().isIn(['sedan', 'suv', 'luxury', 'eco']).withMessage('Valid vehicle type is required'),
+    body('vehicleDetails.make').trim().not().isEmpty().withMessage('Vehicle make is required'),
+    body('vehicleDetails.model').trim().not().isEmpty().withMessage('Vehicle model is required'),
+    body('vehicleDetails.year').isInt({ min: 2010, max: new Date().getFullYear() }).withMessage('Valid vehicle year is required'),
+    body('vehicleDetails.color').trim().not().isEmpty().withMessage('Vehicle color is required'),
+    body('vehicleDetails.licensePlate').trim().not().isEmpty().withMessage('License plate is required'),
+    body('documents.driverLicense').optional().isString().withMessage('Driver license document must be a string'),
+    body('documents.vehicleRegistration').optional().isString().withMessage('Vehicle registration document must be a string'),
+    body('documents.insurance').optional().isString().withMessage('Insurance document must be a string'),
+    body('documents.profilePhoto').optional().isString().withMessage('Profile photo must be a string'),
+    body('bankingInfo.accountNumber').optional().isString().withMessage('Account number must be a string'),
+    body('bankingInfo.routingNumber').optional().isString().withMessage('Routing number must be a string'),
+    body('bankingInfo.taxId').optional().isString().withMessage('Tax ID must be a string')
+  ],
+  driverController.registerDriver
+);
+
+// All routes below require authentication
 router.use(authenticate);
 
-// All routes require driver role
+// All routes below require driver role
 router.use(authorize(['driver']));
 
 // Update driver availability

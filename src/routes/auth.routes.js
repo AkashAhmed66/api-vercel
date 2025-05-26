@@ -9,16 +9,41 @@ const router = express.Router();
 router.post(
   '/register',
   [
-    body('name').trim().not().isEmpty().withMessage('Name is required'),
-    body('email').isEmail().withMessage('Please enter a valid email'),
+    body('name')
+      .trim()
+      .not()
+      .isEmpty()
+      .withMessage('Name is required')
+      .isLength({ min: 2, max: 50 })
+      .withMessage('Name must be between 2 and 50 characters')
+      .matches(/^[a-zA-Z\s]+$/)
+      .withMessage('Name can only contain letters and spaces'),
+    body('email')
+      .isEmail()
+      .withMessage('Please enter a valid email')
+      .normalizeEmail()
+      .custom(async (email) => {
+        const User = require('../models/user.model');
+        const existingUser = await User.findOne({ email });
+        if (existingUser) {
+          throw new Error('Email is already registered');
+        }
+        return true;
+      }),
     body('password')
-      .isLength({ min: 6 })
-      .withMessage('Password must be at least 6 characters long'),
+      .isLength({ min: 6, max: 128 })
+      .withMessage('Password must be between 6 and 128 characters'),
     body('phone')
       .trim()
       .not()
       .isEmpty()
       .withMessage('Phone number is required')
+      .isMobilePhone()
+      .withMessage('Please enter a valid phone number'),
+    body('role')
+      .optional()
+      .isIn(['user', 'rider', 'driver'])
+      .withMessage('Invalid role specified')
   ],
   authController.register
 );
@@ -58,6 +83,15 @@ router.post(
       .withMessage('Password must be at least 6 characters long')
   ],
   authController.resetPassword
+);
+
+// Verify email with token
+router.post(
+  '/verify-email',
+  [
+    body('token').not().isEmpty().withMessage('Token is required')
+  ],
+  authController.verifyEmail
 );
 
 module.exports = router; 

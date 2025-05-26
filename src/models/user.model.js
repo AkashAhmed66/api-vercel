@@ -131,6 +131,11 @@ const userSchema = new mongoose.Schema({
       type: Date
     },
     vehicleDetails: {
+      type: {
+        type: String,
+        enum: ['sedan', 'suv', 'luxury', 'eco'],
+        trim: true
+      },
       model: {
         type: String,
         trim: true
@@ -151,6 +156,43 @@ const userSchema = new mongoose.Schema({
         trim: true
       }
     },
+    documents: {
+      driverLicense: {
+        type: String,
+        trim: true
+      },
+      vehicleRegistration: {
+        type: String,
+        trim: true
+      },
+      insurance: {
+        type: String,
+        trim: true
+      },
+      profilePhoto: {
+        type: String,
+        trim: true
+      }
+    },
+    bankingInfo: {
+      accountNumber: {
+        type: String,
+        trim: true
+      },
+      routingNumber: {
+        type: String,
+        trim: true
+      },
+      taxId: {
+        type: String,
+        trim: true
+      }
+    },
+    applicationStatus: {
+      type: String,
+      enum: ['pending', 'approved', 'rejected', 'under_review'],
+      default: 'pending'
+    },
     isActive: {
       type: Boolean,
       default: false
@@ -158,6 +200,13 @@ const userSchema = new mongoose.Schema({
     isVerified: {
       type: Boolean,
       default: false
+    },
+    registrationDate: {
+      type: Date,
+      default: Date.now
+    },
+    approvalDate: {
+      type: Date
     },
     currentLocation: {
       latitude: {
