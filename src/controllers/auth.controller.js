@@ -53,9 +53,25 @@ const register = async (req, res) => {
     });
   } catch (error) {
     console.error('Registration error:', error);
+    
+    // More specific error handling
+    if (error.name === 'ValidationError') {
+      return res.status(400).json({
+        message: 'Validation failed',
+        error: process.env.NODE_ENV === 'development' ? error.message : 'Invalid input data'
+      });
+    }
+    
+    if (error.name === 'MongoError' || error.name === 'MongoServerError') {
+      return res.status(503).json({
+        message: 'Database connection error',
+        error: process.env.NODE_ENV === 'development' ? error.message : 'Service temporarily unavailable'
+      });
+    }
+    
     res.status(500).json({ 
       message: 'Registration failed',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
     });
   }
 };

@@ -4,6 +4,142 @@ const User = require('../models/user.model');
 const { validationResult } = require('express-validator');
 
 /**
+ * Helper function to convert degrees to radians
+ */
+const deg2rad = (deg) => {
+  return deg * (Math.PI/180);
+};
+
+/**
+ * Create a simple ride (for Redux compatibility)
+ * @route POST /api/rides
+ * @access Private
+ */
+const createRide = async (req, res) => {
+  try {
+    console.log('CreateRide called with body:', JSON.stringify(req.body, null, 2));
+    console.log('User from auth:', req.user);
+
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      console.log('Validation errors:', errors.array());
+      return res.status(400).json({ 
+        message: 'Validation errors', 
+        errors: errors.array() 
+      });
+    }
+
+    // Support both naming conventions
+    const pickup = req.body.pickup || req.body.pickupLocation;
+    const destination = req.body.destination || req.body.dropoffLocation;
+    const scheduledFor = req.body.scheduledFor || req.body.scheduledTime;
+
+    console.log('Pickup:', pickup);
+    console.log('Destination:', destination);
+
+    if (!pickup || !destination) {
+      return res.status(400).json({ 
+        message: 'Pickup and destination locations are required' 
+      });
+    }
+
+    // Validate location structure
+    if (!pickup.latitude || !pickup.longitude || !pickup.address) {
+      return res.status(400).json({ 
+        message: 'Pickup location must have latitude, longitude, and address' 
+      });
+    }
+
+    if (!destination.latitude || !destination.longitude || !destination.address) {
+      return res.status(400).json({ 
+        message: 'Destination location must have latitude, longitude, and address' 
+      });
+    }
+
+    if (!req.user || !req.user._id) {
+      return res.status(401).json({ 
+        message: 'User authentication required' 
+      });
+    }
+
+    // Calculate distance using Haversine formula
+    const R = 6371; // Radius of the Earth in km
+    const dLat = deg2rad(destination.latitude - pickup.latitude);
+    const dLon = deg2rad(destination.longitude - pickup.longitude);
+    const a = 
+      Math.sin(dLat/2) * Math.sin(dLat/2) +
+      Math.cos(deg2rad(pickup.latitude)) * Math.cos(deg2rad(destination.latitude)) * 
+      Math.sin(dLon/2) * Math.sin(dLon/2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    const distance = R * c; // Distance in km
+
+    // Calculate fare (20 taka per km, minimum 50 taka)
+    const FARE_PER_KM = 20;
+    const MINIMUM_FARE = 50;
+    const calculatedFare = Math.max(MINIMUM_FARE, Math.round(distance * FARE_PER_KM));
+
+    // Create ride with proper data mapping
+    const rideData = {
+      user: req.user._id,
+      pickupLocation: {
+        address: pickup.address,
+        latitude: pickup.latitude,
+        longitude: pickup.longitude
+      },
+      dropoffLocation: {
+        address: destination.address,
+        latitude: destination.latitude,
+        longitude: destination.longitude
+      },
+      rideType: req.body.rideType || 'standard',
+      estimatedDistance: distance,
+      estimatedDuration: Math.round(distance * 2), // Rough estimate: 30 km/h
+      estimatedPrice: req.body.estimatedPrice || req.body.estimatedFare || calculatedFare,
+      paymentMethod: req.body.paymentMethod || 'cash',
+      status: 'searching' // Always start with 'searching' status
+    };
+
+    // Add scheduled fields if needed
+    if (scheduledFor) {
+      rideData.scheduledTime = new Date(scheduledFor);
+      rideData.isScheduled = true;
+    }
+
+    console.log('Creating ride with data:', JSON.stringify(rideData, null, 2));
+
+    const ride = new Ride(rideData);
+
+    await ride.save();
+    console.log('Ride saved successfully:', ride._id);
+
+    // Convert to frontend format
+    const responseRide = {
+      id: ride._id.toString(),
+      userId: ride.user.toString(),
+      driverId: ride.driver?.toString(),
+      pickup: ride.pickupLocation,
+      destination: ride.dropoffLocation,
+      status: ride.status,
+      fare: ride.estimatedPrice,
+      distance: ride.estimatedDistance,
+      duration: ride.estimatedDuration,
+      scheduledFor: ride.scheduledTime,
+      createdAt: ride.createdAt,
+      updatedAt: ride.updatedAt
+    };
+
+    res.status(201).json(responseRide);
+  } catch (error) {
+    console.error('Create ride error:', error);
+    console.error('Error stack:', error.stack);
+    res.status(500).json({ 
+      message: 'Failed to create ride',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+/**
  * Get available ride options
  * @route GET /api/rides/options
  * @access Private
@@ -233,10 +369,6 @@ const requestRide = async (req, res) => {
 };
 
 // Helper function for distance calculation
-const deg2rad = (deg) => {
-  return deg * (Math.PI/180);
-};
-
 /**
  * Cancel a ride
  * @route PUT /api/rides/:rideId/cancel
@@ -503,6 +635,7 @@ const rateRide = async (req, res) => {
 };
 
 module.exports = {
+  createRide,
   getRideOptions,
   estimateRide,
   requestRide,

@@ -5,8 +5,26 @@ const { authenticate } = require('../middleware/auth.middleware');
 
 const router = express.Router();
 
+// Test route without authentication for debugging
+router.get('/test', (req, res) => {
+  res.json({ message: 'Ride routes working', timestamp: new Date() });
+});
+
 // All routes require authentication
 router.use(authenticate);
+
+// Test route with authentication for debugging
+router.get('/auth-test', (req, res) => {
+  res.json({ 
+    message: 'Authentication working', 
+    user: req.user ? { 
+      id: req.user._id, 
+      name: req.user.name, 
+      email: req.user.email 
+    } : null,
+    timestamp: new Date() 
+  });
+});
 
 // Get available ride options
 router.get('/options', rideController.getRideOptions);
@@ -32,7 +50,45 @@ router.post(
   rideController.estimateRide
 );
 
-// Request a ride
+// Create/Request a ride (handles both simple create and full request)
+router.post(
+  '/',
+  [
+    body('pickup').optional().isObject().withMessage('Pickup location must be an object'),
+    body('pickup.latitude').optional().isNumeric().withMessage('Pickup latitude must be a number'),
+    body('pickup.longitude').optional().isNumeric().withMessage('Pickup longitude must be a number'),
+    body('pickup.address').optional().isString().withMessage('Pickup address must be a string'),
+    
+    body('destination').optional().isObject().withMessage('Destination location must be an object'),
+    body('destination.latitude').optional().isNumeric().withMessage('Destination latitude must be a number'),
+    body('destination.longitude').optional().isNumeric().withMessage('Destination longitude must be a number'),
+    body('destination.address').optional().isString().withMessage('Destination address must be a string'),
+    
+    // Legacy naming support
+    body('pickupLocation').optional().isObject().withMessage('Pickup location is required'),
+    body('pickupLocation.latitude').optional().isNumeric().withMessage('Pickup latitude must be a number'),
+    body('pickupLocation.longitude').optional().isNumeric().withMessage('Pickup longitude must be a number'),
+    body('pickupLocation.address').optional().isString().withMessage('Pickup address is required'),
+    
+    body('dropoffLocation').optional().isObject().withMessage('Dropoff location is required'),
+    body('dropoffLocation.latitude').optional().isNumeric().withMessage('Dropoff latitude must be a number'),
+    body('dropoffLocation.longitude').optional().isNumeric().withMessage('Dropoff longitude must be a number'),
+    body('dropoffLocation.address').optional().isString().withMessage('Dropoff address is required'),
+    
+    body('estimatedPrice').optional().isNumeric().withMessage('Estimated price must be a number'),
+    body('rideType').optional().isString().withMessage('Ride type must be a string'),
+    body('paymentMethod').optional().isString().withMessage('Payment method must be a string'),
+    body('scheduledFor').optional().isISO8601().withMessage('Scheduled time must be a valid date'),
+    body('scheduledTime').optional().isISO8601().withMessage('Scheduled time must be a valid date'),
+    body('isScheduled').optional().isBoolean().withMessage('isScheduled must be a boolean'),
+    body('isRecurring').optional().isBoolean().withMessage('isRecurring must be a boolean'),
+    body('recurringDays').optional().isArray().withMessage('recurringDays must be an array'),
+    body('promoCode').optional().isString().withMessage('Promo code must be a string')
+  ],
+  rideController.createRide
+);
+
+// Request a ride (explicit endpoint)
 router.post(
   '/request',
   [

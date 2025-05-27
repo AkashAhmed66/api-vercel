@@ -21,15 +21,7 @@ router.post(
     body('email')
       .isEmail()
       .withMessage('Please enter a valid email')
-      .normalizeEmail()
-      .custom(async (email) => {
-        const User = require('../models/user.model');
-        const existingUser = await User.findOne({ email });
-        if (existingUser) {
-          throw new Error('Email is already registered');
-        }
-        return true;
-      }),
+      .normalizeEmail(),
     body('password')
       .isLength({ min: 6, max: 128 })
       .withMessage('Password must be between 6 and 128 characters'),
@@ -38,11 +30,11 @@ router.post(
       .not()
       .isEmpty()
       .withMessage('Phone number is required')
-      .isMobilePhone()
-      .withMessage('Please enter a valid phone number'),
+      .isLength({ min: 10, max: 15 })
+      .withMessage('Phone number must be between 10-15 characters'),
     body('role')
       .optional()
-      .isIn(['user', 'rider', 'driver'])
+      .isIn(['user', 'rider', 'driver', 'admin'])
       .withMessage('Invalid role specified')
   ],
   authController.register
